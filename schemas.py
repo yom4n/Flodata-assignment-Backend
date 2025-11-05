@@ -20,12 +20,19 @@ class PydanticObjectId(str):
         field_schema.update(type='string')
 
 # Token models
-class Token(BaseModel):
+class TokenBase(BaseModel):
+    token_type: str = "bearer"
     access_token: str
-    token_type: str
+    
+class Token(TokenBase):
+    refresh_token: str
+
+class RefreshToken(BaseModel):
+    refresh_token: str
 
 class TokenData(BaseModel):
     username: str | None = None
+    token_type: str | None = None
 
 # Student models
 class StudentBase(BaseModel):

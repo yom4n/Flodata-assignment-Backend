@@ -8,7 +8,13 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from .config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+from .config import (
+    SECRET_KEY, 
+    ALGORITHM, 
+    ACCESS_TOKEN_EXPIRE_MINUTES, 
+    REFRESH_TOKEN_EXPIRE_DAYS,
+    DATABASE_NAME
+)
 from . import database
 from . import schemas
 
@@ -52,16 +58,35 @@ async def authenticate_user(username: str, password: str) -> Optional[schemas.Us
         disabled=user.disabled
     )
 
-def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
-    """Create a JWT access token."""
+def create_token(
+    data: Dict[str, Any], 
+    token_type: str = "access",
+    expires_delta: Optional[timedelta] = None
+) -> str:
+    """Create a JWT token (access or refresh)."""
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
+    
+    # Set expiration time
+    if token_type == "refresh":
+        if not expires_delta:
+            expires_delta = timedelta(days=REFRESH_TOKEN_EXPIRES_DAYS)
+        to_encode.update({"type": "refresh"})
+    else:  # access token
+        if not expires_delta:
+            expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        to_encode.update({"type": "access"})
+    
+    expire = datetime.utcnow() + expires_delta
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.utcnow(),
+    })
+    
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+# Alias for backward compatibility
+create_access_token = create_token
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -137,11 +162,16 @@ async def register_user(user_data: schemas.UserCreate):
     created_user = await database.user_collection.find_one({"_id": result.inserted_id})
     return schemas.UserOut(**created_user)
 
-@auth_router.post("/login", response_model=schemas.Token)
+@auth_router.post("/login", response_model=schemas.TokenBase)
 async def login_for_access_token(
+    response: Response,
     form_data: OAuth2PasswordRequestForm = Depends()
 ):
-    """OAuth2 compatible token login, get an access token for future requests."""
+    """
+    OAuth2 compatible token login.
+    - Returns access token in response body
+    - Sets refresh token in HTTP-only cookie
+    """
     user = await authenticate_user(form_data.username, form_data.password)
     if not user:
         raise HTTPException(
@@ -150,10 +180,100 @@ async def login_for_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
+    # Create tokens
+    access_token = create_token(
+        data={"sub": user.username},
+        token_type="access"
+    )
+    
+    refresh_token = create_token(
+        data={"sub": user.username},
+        token_type="refresh"
+    )
+    
+    # Store refresh token in database
+    await database.client[DATABASE_NAME]["refresh_tokens"].insert_one({
+        "user_id": user.username,
+        "token": refresh_token,
+        "expires_at": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        "created_at": datetime.utcnow()
+    })
+    
+    # Set refresh token in HTTP-only cookie
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,  # in seconds
+        samesite="lax",
+        secure=True,  # Set to True in production with HTTPS
+        path="/api/v1/auth/refresh"  # Only send for refresh requests
+    )
+    
+    # Only return access token in response body
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+@auth_router.post("/refresh", response_model=schemas.TokenBase)
+async def refresh_access_token(
+    refresh_data: schemas.RefreshToken
+):
+    """Get a new access token using a refresh token."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        # Verify refresh token
+        payload = jwt.decode(
+            refresh_data.refresh_token, 
+            SECRET_KEY, 
+            algorithms=[ALGORITHM]
+        )
+        
+        # Check token type
+        if payload.get("type") != "refresh":
+            raise credentials_exception
+            
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+            
+        # Verify token is not revoked
+        token_valid = await database.client[DATABASE_NAME]["refresh_tokens"].find_one({
+            "token": refresh_data.refresh_token,
+            "user_id": username,
+            "expires_at": {"$gt": datetime.utcnow()}
+        })
+        
+        if not token_valid:
+            raise credentials_exception
+            
+    except JWTError:
+        raise credentials_exception
+    
+    # Create new access token
+    access_token = create_token(
+        data={"sub": username},
+        token_type="access"
     )
     
     return {"access_token": access_token, "token_type": "bearer"}
+
+@auth_router.post("/logout")
+async def logout(
+    refresh_data: schemas.RefreshToken,
+    current_user: schemas.UserOut = Depends(get_current_user)
+):
+    """Revoke a refresh token."""
+    # Remove the refresh token from the database
+    result = await database.client[DATABASE_NAME]["refresh_tokens"].delete_one({
+        "token": refresh_data.refresh_token,
+        "user_id": current_user.username
+    })
+    
+    return {"message": "Successfully logged out"}
