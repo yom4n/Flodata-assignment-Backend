@@ -81,8 +81,10 @@ uvicorn main:app --reload
 
 ## 5. Default admin account (generated on backend startup)
 
-username: admin
-password: adminpassword
+`username: admin`
+
+`password: adminpassword`
+
 
 The API will be available at `http://localhost:8000`
 
