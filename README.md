@@ -7,7 +7,7 @@ This document guides you through setting up and running the FastAPI backend for 
 ### 1.1 Clone the Repository
 Clone the project repository to your local machine:
 ```bash
-git clone <repository_url>
+git clone https://github.com/yom4n/Flodata-assignment-Backend
 ```
 
 ### 1.2 Virtual Environment
