@@ -1,6 +1,6 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
-from .config import DATABASE_URL, DATABASE_NAME
+from config import DATABASE_URL, DATABASE_NAME
 
 # Initialize password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

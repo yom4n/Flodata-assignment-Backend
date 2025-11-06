@@ -2,8 +2,9 @@ from fastapi import FastAPI, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from . import database
-from .auth import auth_router
+import database
+from auth import auth_router
+from students import router as students_router
 
 # Create FastAPI app
 app = FastAPI(
@@ -17,7 +18,7 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_origins=["http://localhost:5174"],  # In production, replace with your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -25,6 +26,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
+app.include_router(students_router)  # Uses the prefix defined in the router
 
 # Event handlers
 @app.on_event("startup")
